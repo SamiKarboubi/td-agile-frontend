@@ -4,8 +4,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-RUN npm run build
+RUN npm run build -- --configuration production
 # --- Étape 2 : servir les fichiers statiques avec nginx ---
 FROM nginx:alpine
 COPY --from=build /app/dist/projetTD/browser /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 80   

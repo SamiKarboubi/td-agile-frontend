@@ -1,28 +1,80 @@
-name: CI/CD
+name: Frontend - Artifact Registry et Cloud Run
+
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-frontend-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build-and-push:
+  deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-# Autorise le workflow à publier une image sur GHCR
+    timeout-minutes: 30
+
     permissions:
       contents: read
-      packages: write
+      id-token: write
+
+    env:
+      PROJECT_ID: projet-td-agile-test-508807
+      REGION: us-west2
+      REPOSITORY: td-agile
+      SERVICE: td-agile-frontend
+      CONTAINER_PORT: '80'
+      MEMORY: 256Mi
+      CONCURRENCY: '80'
+
     steps:
-    - name: Récupérer le code
-      uses: actions/checkout@v4
+      - name: Recuperer le code
+        uses: actions/checkout@v4
 
-    - name: Connexion à GHCR
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Definir le nom de l'image
+        shell: bash
+        run: |
+          echo "IMAGE_URI=${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${SERVICE}:${GITHUB_SHA}" >> "$GITHUB_ENV"
 
-    - name: Build et push de l'image
-      uses: docker/build-push-action@v6
-      with:
-        context: .
-        push: true
-        tags: ghcr.io/samikarboubi/td-agile-frontend:latest
+      - name: Construire l'image depuis le Dockerfile
+        run: docker build --pull --platform linux/amd64 -t "$IMAGE_URI" .
+
+      - name: Se connecter a Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: github-deployer@projet-td-agile-test-508807.iam.gserviceaccount.com
+
+      - name: Installer gcloud
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Connecter Docker a Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Publier l'image
+        run: docker push "$IMAGE_URI"
+
+      # L'acces public est configure une fois dans Cloud Shell.
+      - name: Deployer la nouvelle version
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --image="$IMAGE_URI" \
+            --service-account="td-runtime@${PROJECT_ID}.iam.gserviceaccount.com" \
+            --port="$CONTAINER_PORT" \
+            --cpu=1 \
+            --memory="$MEMORY" \
+            --concurrency="$CONCURRENCY" \
+            --min=0 \
+            --max=1 \
+            --quiet
+
+      - name: Afficher l'URL du service
+        run: |
+          gcloud run services describe "$SERVICE" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --format='value(status.url)'
